@@ -1,0 +1,11 @@
+[package]
+name = "my-openai"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dotenvy = "0.15.7"
+openssl = { version = "0.10.66", features = ["vendored"] }
+reqwest = { version = "0.12.7", features = ["json"] }
+serde = { version = "1.0.210", features = ["derive"] }
+tokio = { version = "1.40.0", features = ["full"] }
