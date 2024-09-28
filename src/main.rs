@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::env;
 
-#[derive(serde::Serialize, Debug)]
+#[derive(Serialize, Debug)]
 struct Message {
     role: String,
     content: String,
@@ -13,7 +14,7 @@ struct Simple {
     model: String,
 }
 impl Simple {
-    fn create_chat_completion(&self) -> CreateChatCompletion {
+    fn create_chat_completion_request(&self) -> ChatCompletionRequest {
         let system_message = Message {
             role: "system".to_string(),
             content: self.system.clone(),
@@ -23,7 +24,7 @@ impl Simple {
             content: self.user.clone(),
         };
         let messages = vec![system_message, user_message];
-        CreateChatCompletion {
+        ChatCompletionRequest {
             messages,
             model: self.model.clone(),
             temperature: None,
@@ -32,15 +33,15 @@ impl Simple {
     }
 }
 
-#[derive(serde::Serialize, Debug)]
-struct CreateChatCompletion {
+#[derive(Serialize, Debug)]
+struct ChatCompletionRequest {
     messages: Vec<Message>,
     model: String,
     temperature: Option<f32>,
     stream: Option<bool>,
 }
 
-#[derive(serde::Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct ChatCompletion {
     id: String,
     object: String,
@@ -51,28 +52,44 @@ struct ChatCompletion {
     service_tier: Option<String>,
     usage: ChatUsage,
 }
-#[derive(serde::Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct ChatUsage {
     completion_tokens: u32,
     prompt_tokens: u32,
     total_tokens: u32,
     completion_tokens_details: CompletionTokenDetails,
 }
-#[derive(serde::Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct CompletionTokenDetails {
     reasoning_tokens: u32,
 }
 
-#[derive(serde::Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct ChatCompletionChoice {
     finish_reason: String,
     index: u32,
     message: ChatCompletionMessage,
 }
-#[derive(serde::Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct ChatCompletionMessage {
+    content: Option<String>,
     refusal: Option<String>,
     role: String,
+    tool_calls: Option<ToolCall>,
+}
+#[derive(Serialize, Deserialize, Debug)]
+struct ToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: ToolCallFunction,
+    role: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ToolCallFunction {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Debug)]
@@ -86,11 +103,11 @@ impl Client {
     fn new(api_key: String) -> Self {
         Client { api_key }
     }
-    async fn call(
+    async fn create_chat_completion(
         &self,
         path: &str,
-        payload: CreateChatCompletion,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        payload: ChatCompletionRequest,
+    ) -> Result<ChatCompletion, Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
 
         let resp = client
@@ -100,11 +117,10 @@ impl Client {
             .send()
             .await?
             //.json::<HashMap<String, String>>()
-            .text()
+            .json::<ChatCompletion>()
             .await?;
 
-        println!("{resp:#?}");
-        Ok(())
+        Ok(resp)
     }
 }
 
@@ -120,8 +136,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user: format!("Say hello to {name}!"),
         model: model.to_string(),
     };
-    let cc = simple.create_chat_completion();
-    let resp = client.call("/chat/completions", cc).await?;
+    let cc = simple.create_chat_completion_request();
+    let resp = client
+        .create_chat_completion("/chat/completions", cc)
+        .await?;
     dbg!(resp);
 
     Ok(())
