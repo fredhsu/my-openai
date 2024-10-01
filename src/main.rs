@@ -1,4 +1,7 @@
-use futures_util::StreamExt;
+use anyhow::{Context, Result};
+use bytes::Bytes;
+use core::str;
+use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use std::env;
 
@@ -40,6 +43,54 @@ struct ChatCompletionRequest {
     model: String,
     temperature: Option<f32>,
     stream: Option<bool>,
+}
+
+// b"data: {
+// \"id\":\"chatcmpl-ADfH0ONdNW0T4QhMbxF01qCw1iQ6x\",
+// \"object\":\"chat.completion.chunk\",
+// \"created\":1727820282,
+// \"model\":\"gpt-4o-mini-2024-07-18\",
+// \"system_fingerprint\":\"fp_f85bea6784\",
+// \"choices\":[{\"index\":0,
+// \"delta\":{\"role\":\"assistant\",
+// \"content\":\"\",
+// \"refusal\":null},
+// \"logprobs\":null,\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-ADfH0ONdNW0T4QhMbxF01qCw1iQ6x\",\"object\":\"chat.completion.chunk\",\"created\":1727820282,\"model\":\"gpt-4o-mini-2024-07-18\",\"system_fingerprint\":\"fp_f85bea6784\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
+
+#[derive(Serialize, Deserialize, Debug)]
+struct StreamingChunk {
+    data: ChatCompletionChunk,
+}
+#[derive(Serialize, Deserialize, Debug)]
+struct ChatCompletionChunk {
+    id: String,
+    choices: Vec<ChatCompletionChunkChoice>,
+    created: u32,
+    model: String,
+    service_tier: Option<String>,
+    system_fingerprint: String,
+    object: String,
+    usage: Option<ChatUsage>,
+}
+#[derive(Serialize, Deserialize, Debug)]
+struct ChatCompletionChunkChoice {
+    delta: Delta,
+    logprobs: Option<LogProbs>,
+    finish_reason: Option<String>,
+    index: u32,
+}
+#[derive(Serialize, Deserialize, Debug)]
+struct Delta {
+    content: Option<String>,
+    tool_calls: Option<ToolCall>,
+    refusal: Option<String>,
+    role: Option<String>,
+}
+#[derive(Serialize, Deserialize, Debug)]
+struct LogProbs {
+    // TODO: put proper structs
+    content: Vec<String>,
+    refusal: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -113,7 +164,7 @@ impl Client {
     async fn create_chat_completion(
         &self,
         path: &str,
-        payload: ChatCompletionRequest,
+        payload: &ChatCompletionRequest,
     ) -> Result<ChatCompletion, Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
 
@@ -131,6 +182,11 @@ impl Client {
     }
 
     async fn create_stream_chat_completion(&self, path: &str, payload: ChatCompletionRequest) {
+        fn parse_chat_completion_chunk(chunk: &str) -> Option<ChatCompletionChunk> {
+            chunk
+                .strip_prefix("data: ")
+                .and_then(|d| serde_json::from_str::<ChatCompletionChunk>(d).ok())
+        }
         // reference: https://platform.openai.com/docs/api-reference/streaming#chat/create-stream
         // https://html.spec.whatwg.org/multipage/server-sent-events.html#server-sent-events
         let client = reqwest::Client::new();
@@ -144,7 +200,42 @@ impl Client {
             .unwrap()
             .bytes_stream();
         while let Some(item) = stream.next().await {
-            println!("Chunk: {:?}", item.unwrap());
+            let chunk = item.unwrap();
+            let chunk_strings = str::from_utf8(&chunk).unwrap();
+            let chunks: Vec<&str> = chunk_strings.split("\n").collect();
+            // println!("{chunks:#?}");
+            let cc_chunks: Vec<ChatCompletionChunk> = chunks
+                .iter()
+                .filter(|&c| !c.is_empty() && !c.ends_with("[DONE]"))
+                .filter_map(|c| parse_chat_completion_chunk(c))
+                .collect();
+            // let cc_chunks = chunks
+            //     .iter()
+            //     .filter_map(|c| {
+            //         if c.is_empty() {
+            //             return None;
+            //         }
+            //         if c.ends_with("[DONE]") {
+            //             return None;
+            //         }
+            //         if let Some(d) = c.strip_prefix("data: ") {
+            //             Some(serde_json::from_str::<ChatCompletionChunk>(d).unwrap())
+            //         } else {
+            //             None
+            //         }
+            //     })
+            //     // .collect::<Vec<Option<ChatCompletionChunk>>>();
+            //     .collect::<Vec<ChatCompletionChunk>>();
+            //
+            println!("{cc_chunks:#?}");
+            // match serde_json::from_str::<ChatCompletionChunk>(chunks[0]) {
+            //     Ok(json) => {
+            //         println!("json: {json:?}");
+            //     }
+            //     Err(e) => {
+            //         println!("## error: {e} ##");
+            //     }
+            // }
         }
     }
 }
@@ -161,19 +252,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         user: format!("Say hello to {name}!"),
         model: model.to_string(),
     };
-    let cc = simple.create_chat_completion_request();
-    let resp = client
-        .create_chat_completion("/chat/completions", cc)
-        .await?;
-    dbg!(resp);
-    use futures_util::StreamExt;
-    let client = reqwest::Client::new();
+    let mut cc = simple.create_chat_completion_request();
+    // let resp = client
+    //     .create_chat_completion("/chat/completions", &cc)
+    //     .await?;
+    // dbg!(resp);
 
-    let mut stream = reqwest::get("http://httpbin.org/ip").await?.bytes_stream();
-
-    while let Some(item) = stream.next().await {
-        println!("Chunk: {:?}", item?);
-    }
+    cc.stream = Some(true);
+    // let mut stream = reqwest::post("http://httpbin.org/ip").await?.bytes_stream();
+    client
+        .create_stream_chat_completion("/chat/completions", cc)
+        .await;
 
     Ok(())
 }
