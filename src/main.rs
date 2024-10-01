@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::env;
 
@@ -95,13 +96,19 @@ struct ToolCallFunction {
 #[derive(Debug)]
 struct Client {
     api_key: String,
+    organization: Option<String>,
+    project: Option<String>,
 }
 
 const OPENAI_API_URL: &str = "https://api.openai.com/v1";
 
 impl Client {
     fn new(api_key: String) -> Self {
-        Client { api_key }
+        Client {
+            api_key,
+            organization: None,
+            project: None,
+        }
     }
     async fn create_chat_completion(
         &self,
@@ -122,6 +129,24 @@ impl Client {
 
         Ok(resp)
     }
+
+    async fn create_stream_chat_completion(&self, path: &str, payload: ChatCompletionRequest) {
+        // reference: https://platform.openai.com/docs/api-reference/streaming#chat/create-stream
+        // https://html.spec.whatwg.org/multipage/server-sent-events.html#server-sent-events
+        let client = reqwest::Client::new();
+
+        let mut stream = client
+            .post(OPENAI_API_URL.to_string() + path)
+            .bearer_auth(self.api_key.clone())
+            .json(&payload)
+            .send()
+            .await
+            .unwrap()
+            .bytes_stream();
+        while let Some(item) = stream.next().await {
+            println!("Chunk: {:?}", item.unwrap());
+        }
+    }
 }
 
 #[tokio::main]
@@ -141,6 +166,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .create_chat_completion("/chat/completions", cc)
         .await?;
     dbg!(resp);
+    use futures_util::StreamExt;
+    let client = reqwest::Client::new();
+
+    let mut stream = reqwest::get("http://httpbin.org/ip").await?.bytes_stream();
+
+    while let Some(item) = stream.next().await {
+        println!("Chunk: {:?}", item?);
+    }
 
     Ok(())
 }
