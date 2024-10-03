@@ -2,8 +2,11 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use core::str;
 use futures_util::{stream, Stream, StreamExt, TryStreamExt};
+use qdrant_client::qdrant::{query, QueryPointsBuilder, QueryResponse};
+use qdrant_client::qdrant::{PointId, Query};
+use qdrant_client::Qdrant;
 use serde::{Deserialize, Serialize};
-use std::env;
+use std::{env, vec};
 
 #[derive(Serialize, Debug)]
 struct Message {
@@ -44,18 +47,6 @@ struct ChatCompletionRequest {
     temperature: Option<f32>,
     stream: Option<bool>,
 }
-
-// b"data: {
-// \"id\":\"chatcmpl-ADfH0ONdNW0T4QhMbxF01qCw1iQ6x\",
-// \"object\":\"chat.completion.chunk\",
-// \"created\":1727820282,
-// \"model\":\"gpt-4o-mini-2024-07-18\",
-// \"system_fingerprint\":\"fp_f85bea6784\",
-// \"choices\":[{\"index\":0,
-// \"delta\":{\"role\":\"assistant\",
-// \"content\":\"\",
-// \"refusal\":null},
-// \"logprobs\":null,\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-ADfH0ONdNW0T4QhMbxF01qCw1iQ6x\",\"object\":\"chat.completion.chunk\",\"created\":1727820282,\"model\":\"gpt-4o-mini-2024-07-18\",\"system_fingerprint\":\"fp_f85bea6784\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n"
 
 #[derive(Serialize, Deserialize, Debug)]
 struct StreamingChunk {
@@ -161,6 +152,28 @@ impl Client {
             project: None,
         }
     }
+    // TODO: refactor to use generic function
+    async fn create_embedding(
+        &self,
+        payload: &EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, Box<dyn std::error::Error>> {
+        let path = "/embeddings";
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(OPENAI_API_URL.to_string() + path)
+            .bearer_auth(self.api_key.clone())
+            .json(&payload)
+            .send()
+            .await?
+            .json::<EmbeddingResponse>()
+            .await?;
+
+        Ok(resp)
+    }
+
+    // TODO: make generic function for requests
+    async fn create_request(&self, path: &str, payload: &EmbeddingRequest) {}
     async fn create_chat_completion(
         &self,
         path: &str,
@@ -228,18 +241,62 @@ impl Client {
             //     .collect::<Vec<ChatCompletionChunk>>();
             //
             println!("{cc_chunks:#?}");
-            // match serde_json::from_str::<ChatCompletionChunk>(chunks[0]) {
-            //     Ok(json) => {
-            //         println!("json: {json:?}");
-            //     }
-            //     Err(e) => {
-            //         println!("## error: {e} ##");
-            //     }
-            // }
         }
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct EmbeddingRequest {
+    input: String,
+    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encoding_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+}
+impl EmbeddingRequest {
+    fn new(input: &str, model: &str) -> Self {
+        EmbeddingRequest {
+            input: input.to_string(),
+            model: model.to_string(),
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct EmbeddingResponse {
+    object: Option<String>,
+    data: Vec<Embedding>,
+    model: String,
+    usage: Usage,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Embedding {
+    index: u32,
+    embedding: Vec<f32>,
+    object: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Usage {
+    prompt_tokens: u32,
+    total_tokens: u32,
+}
+
+async fn query_vectorstore(query: &str) -> QueryResponse {
+    // Use OpenAI embeddings to create embeddings vector for query
+    let client = Qdrant::from_url("http://localhost:6333").build().unwrap();
+    client
+        .query(QueryPointsBuilder::new("dc1").query(Query::new_nearest(vec![0.1, 0.24])))
+        .await
+        .unwrap()
+}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = "gpt-4o-mini";
@@ -253,16 +310,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model: model.to_string(),
     };
     let mut cc = simple.create_chat_completion_request();
-    // let resp = client
-    //     .create_chat_completion("/chat/completions", &cc)
-    //     .await?;
-    // dbg!(resp);
 
     cc.stream = Some(true);
-    // let mut stream = reqwest::post("http://httpbin.org/ip").await?.bytes_stream();
     client
         .create_stream_chat_completion("/chat/completions", cc)
         .await;
 
+    let e = EmbeddingRequest::new(
+        "The food was delicous and the waiter ...",
+        "text-embedding-ada-002",
+    );
+
+    let embedding = client.create_embedding(&e).await?;
+    println!("{embedding:#?}");
     Ok(())
 }
