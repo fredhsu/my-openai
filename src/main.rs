@@ -152,12 +152,23 @@ impl Client {
             project: None,
         }
     }
-    // TODO: refactor to use generic function
     async fn create_embedding(
         &self,
         payload: &EmbeddingRequest,
     ) -> Result<EmbeddingResponse, Box<dyn std::error::Error>> {
         let path = "/embeddings";
+        self.create_request(path, payload).await
+    }
+
+    async fn create_request<T, R>(
+        &self,
+        path: &str,
+        payload: &T,
+    ) -> Result<R, Box<dyn std::error::Error>>
+    where
+        T: Serialize,
+        R: serde::de::DeserializeOwned,
+    {
         let client = reqwest::Client::new();
 
         let resp = client
@@ -166,32 +177,16 @@ impl Client {
             .json(&payload)
             .send()
             .await?
-            .json::<EmbeddingResponse>()
+            .json::<R>()
             .await?;
 
         Ok(resp)
     }
-
-    // TODO: make generic function for requests
-    async fn create_request(&self, path: &str, payload: &EmbeddingRequest) {}
     async fn create_chat_completion(
         &self,
-        path: &str,
         payload: &ChatCompletionRequest,
     ) -> Result<ChatCompletion, Box<dyn std::error::Error>> {
-        let client = reqwest::Client::new();
-
-        let resp = client
-            .post(OPENAI_API_URL.to_string() + path)
-            .bearer_auth(self.api_key.clone())
-            .json(&payload)
-            .send()
-            .await?
-            //.json::<HashMap<String, String>>()
-            .json::<ChatCompletion>()
-            .await?;
-
-        Ok(resp)
+        self.create_request("/chat/completions", payload).await
     }
 
     async fn create_stream_chat_completion(&self, path: &str, payload: ChatCompletionRequest) {
@@ -260,6 +255,7 @@ impl EmbeddingRequest {
     fn new(input: &str, model: &str) -> Self {
         EmbeddingRequest {
             input: input.to_string(),
+            // Default for langchain is "text-embedding-ada-002"
             model: model.to_string(),
             encoding_format: None,
             dimensions: None,
